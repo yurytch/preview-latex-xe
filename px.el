@@ -1,5 +1,6 @@
 ;;; px.el --- preview inline latex in any mode
 
+;; Copyright (C) 2024 Yury Tarasievich <yurytch@github>
 ;; Copyright (C) 2014 Aurélien Aptel <aurelien.aptel@gmail.com>
 ;; Copyright (C) 2013 Rüdiger Sonderfeld <ruediger@c-plusplus.de>
 
@@ -59,11 +60,75 @@ See `org-latex-create-formula-image-program'")
 (defvar px--active nil)
 (make-variable-buffer-local 'px--active)
 
+(defvar px--xelatex-png-mod-active nil)
+  (make-variable-buffer-local 'px--xelatex-mod-png-active)
+
+(defun px--xelatex-png-dpi ()
+  "Calculate DPI for conversion from XeLaTeX-generated PDF to PNG.
+   {(14/10)? * emacs_font_height_px / ((10/72.0) * 72)}  * xetex_pdf_dpi "
+  (ceiling 
+    (* 72.0  ; standard DPI in XeTeX PDF
+      (/ (aref (font-info (face-font 'default)) 3) ; total emacs font height in px
+         (* 72.0 (/ 10.0 72.0 )) ; pixels in 10 pt (default for XeTeX?) glyph height
+      )
+    )
+  )
+)
+
+(defvar px--xelatex-png-image-converter
+  (concat "pdftoppm -png -singlefile "
+    "-r __DPI__ "
+    "-W -1 -H -1 %o/%b.pdf %o/1 " 
+    "&& convert %o/1.png -trim %O && rm %o/1.png " )  )
+
+(defun px--adjust-xelatex-png-image-converter ()
+  "Return xelatex-png image converter description string with DPI adjusted."
+  (replace-regexp-in-string 
+    "__DPI__" (number-to-string (px--xelatex-png-dpi)) px--xelatex-png-image-converter)
+)
+
+(defun px--xelatex-png-init ()
+  "Init and insert modifications of ORG structures."
+  (unless px--xelatex-png-mod-active
+    (setq org-preview-latex-process-alist--xelatex-png
+      (list
+        'xelatex-png 
+        ':programs '("xelatex" "pdftoppm" "convert")
+        ':description "pdf > png"
+        ':message "you need to install packages for: xetex, poppler and imagemagick."
+        ':image-input-type "pdf"
+        ':image-output-type "png"
+        ':image-size-adjust '(1.0 . 1.0)
+        ':latex-compiler '("xelatex -interaction nonstopmode -output-directory %o %f") 
+        ':image-converter (list px--xelatex-png-image-converter)
+      )
+    )
+    (setq org-preview-latex-process-alist
+      (cons
+        org-preview-latex-process-alist--xelatex-png
+        org-preview-latex-process-alist
+      )
+    )
+    (setq org-latex-create-formula-image-program 'xelatex-png)
+    ; alias, obsolete in org 9.*
+    (setq org-preview-latex-default-process 'xelatex-png)
+    ; separate defvar in px
+    (setq px-image-program 'xelatex-png)
+    (setq px--xelatex-png-mod-active t)
+  ) ; end of unless
+)
+
 (defun px--create-preview (&optional beg end)
   "Wrapper for `org-format-latex'.
 The parameter AT should be nil or in (TYPE . POINT) format.  With TYPE being a
 string showing the matched LaTeX statement (e.g., ``$'') and POINT being the
 POINT to replace.  If AT is nil replace statements everywhere."
+  (setcdr (assq 'xelatex-png org-preview-latex-process-alist)
+    (plist-put (alist-get 'xelatex-png org-preview-latex-process-alist)
+      :image-converter
+      (list (px--adjust-xelatex-png-image-converter))
+    )
+  )
   (if (version< "9" org-version)
       (org-format-latex px-temp-file-prefix
                         beg end
@@ -104,6 +169,7 @@ POINT to replace.  If AT is nil replace statements everywhere."
   (interactive)
   (save-excursion
     (let ((inhibit-read-only t))
+      (px--xelatex-png-init)
       (px--set-temp-dir)
       (px-remove)
       (px--create-preview)
